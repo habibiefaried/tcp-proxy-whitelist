@@ -54,3 +54,6 @@ systemctl start wlistproxy
 ```
 
 You may want to add service like `wlistproxy2` etc if you have multiple ports.
+
+# Maturity
+Still being tested on production nomad cluster as proxy between nomad agent
