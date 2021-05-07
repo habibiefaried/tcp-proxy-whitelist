@@ -16,7 +16,7 @@ func main() {
 	}
 
 	if os.Getenv("WHITELISTED_SUBNET") == "" {
-		fmt.Println("[WARN] env WHITELISTED_SUBNET is empty, receiving connections from ANY SUBNET")
+		fmt.Println("[WARN] env WHITELISTED_SUBNET is empty, blocking all connections..")
 	} else {
 		for _, v := range strings.Split(os.Getenv("WHITELISTED_SUBNET"), ",") {
 			_, ipnetB, err := net.ParseCIDR(v)
