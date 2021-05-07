@@ -18,6 +18,7 @@ Run as root
 
 ```
 wget `curl -s https://api.github.com/repos/habibiefaried/tcp-proxy-whitelist/releases/latest | jq -r .assets[2].browser_download_url` -O /usr/bin/wlistproxy
+chmod +x /usr/bin/wlistproxy
 ```
 
 Then
@@ -51,3 +52,5 @@ And then enable and start it
 systemctl enable wlistproxy
 systemctl start wlistproxy
 ```
+
+You may want to add service like `wlistproxy2` etc if you have multiple ports.
