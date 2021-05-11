@@ -43,30 +43,30 @@ func main() {
 			continue
 		}
 
-		if addr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
-			IsWhitelisted := false
-
-			fmt.Println("Connected from " + addr.IP.String())
-			for _, v := range whitelisted_subarray {
-				if v.Contains(addr.IP) {
-					IsWhitelisted = true
-					break
-				}
-			}
-
-			if !IsWhitelisted {
-				fmt.Println("Not eligible")
-				conn.Close()
-				continue
-			}
-
-		} else {
-			fmt.Println("cannot cast the remote addr to TCP. Skipping..")
-			conn.Close()
-			continue
-		}
-
 		go func() {
+			if addr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+				IsWhitelisted := false
+
+				fmt.Println("Connected from " + addr.IP.String())
+				for _, v := range whitelisted_subarray {
+					if v.Contains(addr.IP) {
+						IsWhitelisted = true
+						break
+					}
+				}
+
+				if !IsWhitelisted {
+					fmt.Println("Not eligible")
+					conn.Close()
+					return
+				}
+
+			} else {
+				fmt.Println("cannot cast the remote addr to TCP. Skipping..")
+				conn.Close()
+				return
+			}
+
 			conn2, err := net.Dial("tcp", os.Getenv("REMOTE_ADDR_PAIR"))
 			if err != nil {
 				fmt.Printf("error dialing remote addr %v\n", err)
