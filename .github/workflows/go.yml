@@ -54,12 +54,12 @@ jobs:
           done
           echo "upstream ready"
 
-      # ── case 1: whitelisted (127.0.0.0/8 includes localhost) ──────
+      # ── case 1: whitelisted (127.0.0.0/8 + ::1/128 covers dual-stack) ──
       - name: Test whitelisted request passes through
         run: |
           BIND_PORT=18081 \
             REMOTE_ADDR_PAIR=localhost:18080 \
-            WHITELISTED_SUBNET=127.0.0.0/8 \
+            WHITELISTED_SUBNET=127.0.0.0/8,::1/128 \
             ./wlistproxy &
           PROXY_PID=$!
           # Wait for proxy to be ready.
