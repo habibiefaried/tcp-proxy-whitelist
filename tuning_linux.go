@@ -81,8 +81,17 @@ const maxSpliceSize = 1 << 20 // 1 MiB per splice call
 func spliceDirection(dst, src *net.TCPConn, pipeWrite, pipeRead int) {
 	var srcFD, dstFD int
 
-	src.SyscallConn().Control(func(fd uintptr) { srcFD = int(fd) })
-	dst.SyscallConn().Control(func(fd uintptr) { dstFD = int(fd) })
+	srcRaw, err := src.SyscallConn()
+	if err != nil {
+		return
+	}
+	srcRaw.Control(func(fd uintptr) { srcFD = int(fd) })
+
+	dstRaw, err := dst.SyscallConn()
+	if err != nil {
+		return
+	}
+	dstRaw.Control(func(fd uintptr) { dstFD = int(fd) })
 
 	for {
 		// Step 1: splice from source socket into the write end of the pipe.
