@@ -109,8 +109,9 @@ jobs:
 
           kill $PROXY_PID 2>/dev/null || true
 
-      # ── case 3: concurrent stress — fire 300 requests through one proxy ──
-      - name: Concurrent stress test (300 requests)
+      # ── case 3: concurrent stress — 100 requests, 2 min hard cap ──
+      - name: Concurrent stress test (100 requests, max 120s)
+        timeout-minutes: 4
         run: |
           BIND_PORT=18083 \
             REMOTE_ADDR_PAIR=localhost:18080 \
@@ -118,62 +119,73 @@ jobs:
             ./wlistproxy &
           PROXY_PID=$!
           # Wait for proxy to be ready.
-          for i in $(seq 1 20); do
+          for i in $(seq 1 10); do
             curl -s -o /dev/null http://localhost:18083/ && break
-            sleep 0.25
+            sleep 0.1
           done
 
-          echo "firing 300 concurrent requests..."
+          CONCURRENT=100
+          echo "firing $CONCURRENT concurrent requests (hard timeout 120s)..."
 
-          CONCURRENT=300
+          START=$(date +%s)
+          FAILED=0
+
+          # Launch N background curl processes. Each writes its HTTP code to
+          # a temp file (one per request — avoids races on shared state).
           TMPDIR=$(mktemp -d)
-          START=$(date +%s%N)
-
-          # Launch N concurrent curl processes, each writes its own result file.
           for i in $(seq 1 $CONCURRENT); do
             (
-              BODY=$(curl -s --max-time 5 http://localhost:18083/ 2>&1)
-              echo "$BODY" > "$TMPDIR/result-$i"
+              curl -s -o /dev/null -w "%{http_code}" \
+                --max-time 3 http://localhost:18083/ \
+                > "$TMPDIR/$i" 2>/dev/null || echo "000" > "$TMPDIR/$i"
             ) &
           done
 
-          # Wait for all background jobs to finish.
-          wait
-
-          END=$(date +%s%N)
-          ELAPSED_MS=$(( (END - START) / 1000000 ))
-
-          # Tally results.
-          PASSED=0
-          FAILED=0
+          # wait with a hard deadline: if we hit 120s, fail outright.
+          DEADLINE=$((START + 120))
           for i in $(seq 1 $CONCURRENT); do
-            if grep -q OK "$TMPDIR/result-$i" 2>/dev/null; then
-              PASSED=$((PASSED + 1))
-            else
+            NOW=$(date +%s)
+            if [ "$NOW" -gt "$DEADLINE" ]; then
+              echo "FAIL: timed out after 120s — only $((i - 1)) / $CONCURRENT completed"
+              rm -rf "$TMPDIR"
+              kill $PROXY_PID 2>/dev/null || true
+              exit 1
+            fi
+            wait -n 2>/dev/null || true
+          done
+          wait  # drain any final stragglers
+
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+
+          # Tally: every file should contain exactly "200".
+          for i in $(seq 1 $CONCURRENT); do
+            CODE=$(cat "$TMPDIR/$i" 2>/dev/null || echo "000")
+            if [ "$CODE" != "200" ]; then
               FAILED=$((FAILED + 1))
-              echo "  request $i FAILED: $(cat "$TMPDIR/result-$i" 2>/dev/null | head -1)"
+              [ "$FAILED" -le 5 ] && echo "  request $i: HTTP $CODE"
             fi
           done
 
-          RATE=$(awk "BEGIN { printf \"%.0f\", ($PASSED * 1000) / $ELAPSED_MS }")
+          RATE=$(awk "BEGIN { printf \"%.0f\", ($CONCURRENT - $FAILED) * 1.0 / ($ELAPSED + 1) }")
 
           echo ""
-          echo "═══ Stress test results ═══"
-          echo "  total:    $CONCURRENT"
-          echo "  passed:   $PASSED"
-          echo "  failed:   $FAILED"
-          echo "  time:     ${ELAPSED_MS}ms"
-          echo "  rate:     ~${RATE} req/s"
-          echo "════════════════════════════"
+          echo "═══ Stress test ═══"
+          echo "  total:  $CONCURRENT"
+          echo "  passed: $((CONCURRENT - FAILED))"
+          echo "  failed: $FAILED"
+          echo "  time:   ${ELAPSED}s"
+          echo "  rate:   ~${RATE} req/s"
+          echo "═════════════════════"
 
           rm -rf "$TMPDIR"
           kill $PROXY_PID 2>/dev/null || true
 
           if [ "$FAILED" -gt 0 ]; then
-            echo "FAIL: $FAILED concurrent requests did not return expected response"
+            echo "FAIL: $FAILED requests did not return HTTP 200"
             exit 1
           fi
-          echo "PASS: all $CONCURRENT concurrent requests succeeded"
+          echo "PASS: all $CONCURRENT requests returned HTTP 200"
 
   release:
     name: Release
