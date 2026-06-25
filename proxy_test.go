@@ -170,7 +170,7 @@ func startProxy(tb testing.TB, cfg *config) (addr string, stop func()) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				handleConnection(conn, cfg.remoteAddr, cfg.whitelist, cfg.dialTimeout)
+				handleConnection(conn, cfg.remoteAddr, cfg.whitelist, cfg.dialTimeout, cfg.idleTimeout)
 			}()
 		}
 	}()
@@ -196,6 +196,7 @@ func proxyTestConfig(upstreamAddr string, whitelist ...string) *config {
 		remoteAddr:  upstreamAddr,
 		whitelist:   nets,
 		dialTimeout: 2 * time.Second,
+		idleTimeout: 3 * time.Second,
 	}
 }
 

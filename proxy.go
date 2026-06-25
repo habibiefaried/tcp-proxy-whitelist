@@ -20,7 +20,7 @@ var bufPool = sync.Pool{
 }
 
 // handleConnection checks the whitelist and proxies the client connection upstream.
-func handleConnection(client net.Conn, remoteAddr string, whitelist []*net.IPNet, dialTimeout time.Duration) {
+func handleConnection(client net.Conn, remoteAddr string, whitelist []*net.IPNet, dialTimeout, idleTimeout time.Duration) {
 	defer client.Close()
 
 	tcpAddr, ok := client.RemoteAddr().(*net.TCPAddr)
@@ -49,7 +49,15 @@ func handleConnection(client net.Conn, remoteAddr string, whitelist []*net.IPNet
 	tuneConn(upstreamTCP)
 	tuneConn(clientTCP)
 
-	log.Printf("proxying %s <-> %s", remoteIP, remoteAddr)
+	// Set a hard deadline on the connection lifetime. If the relay takes
+	// longer than idleTimeout, both connections are torn down. This prevents
+	// goroutine leaks from protocols that use indefinite keep-alive
+	// (e.g. HTTP/1.1, Redis idle, database connection pools).
+	deadline := time.Now().Add(idleTimeout)
+	clientTCP.SetDeadline(deadline)
+	upstreamTCP.SetDeadline(deadline)
+
+	log.Printf("proxying %s <-> %s (timeout %v)", remoteIP, remoteAddr, idleTimeout)
 	relay(clientTCP, upstreamTCP)
 }
 

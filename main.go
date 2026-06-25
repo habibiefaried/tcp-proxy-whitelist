@@ -110,7 +110,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			handleConnection(conn, cfg.remoteAddr, cfg.whitelist, cfg.dialTimeout)
+			handleConnection(conn, cfg.remoteAddr, cfg.whitelist, cfg.dialTimeout, cfg.idleTimeout)
 		}()
 	}
 }
@@ -130,6 +130,13 @@ type config struct {
 
 	// dialTimeout caps how long we wait for the upstream TCP handshake.
 	dialTimeout time.Duration
+
+	// idleTimeout is the maximum lifetime of a proxied connection.
+	// When the deadline is reached the relay is torn down, preventing
+	// goroutine leaks from protocols that use indefinite keep-alive
+	// (e.g. HTTP/1.1 without Connection: close).
+	// Default: 30s. Set via IDLE_TIMEOUT (e.g. "60s", "5m").
+	idleTimeout time.Duration
 }
 
 // parseConfig reads configuration from environment variables.
@@ -150,6 +157,18 @@ func parseConfig() *config {
 		bindPort:    bindPort,
 		remoteAddr:  remoteAddr,
 		dialTimeout: 10 * time.Second,
+		idleTimeout: 30 * time.Second,
+	}
+
+	// Optional: IDLE_TIMEOUT caps the lifetime of each proxied connection
+	// to prevent goroutine leaks from keep-alive protocols.
+	if s := os.Getenv("IDLE_TIMEOUT"); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			log.Printf("invalid IDLE_TIMEOUT %q, using default 30s: %v", s, err)
+		} else {
+			cfg.idleTimeout = d
+		}
 	}
 
 	// Parse the optional whitelist.

@@ -116,27 +116,29 @@ jobs:
           BIND_PORT=18083 \
             REMOTE_ADDR_PAIR=localhost:18080 \
             WHITELISTED_SUBNET=127.0.0.0/8,::1/128 \
+            IDLE_TIMEOUT=5s \
             ./wlistproxy &
           PROXY_PID=$!
           # Wait for proxy to be ready.
           for i in $(seq 1 10); do
-            curl -s -o /dev/null http://localhost:18083/ && break
+            curl -s -o /dev/null --http1.0 http://localhost:18083/ && break
             sleep 0.1
           done
 
           CONCURRENT=100
-          echo "firing $CONCURRENT concurrent requests (hard timeout 120s)..."
+          echo "firing $CONCURRENT concurrent requests (HTTP/1.0, hard timeout 120s)..."
 
           START=$(date +%s)
           FAILED=0
 
-          # Launch N background curl processes. Each writes its HTTP code to
-          # a temp file (one per request — avoids races on shared state).
+          # Launch N background curl processes. --http1.0 avoids keep-alive
+          # so the server closes after each response — the proxy relay exits
+          # cleanly instead of hanging on idle connections.
           TMPDIR=$(mktemp -d)
           for i in $(seq 1 $CONCURRENT); do
             (
               curl -s -o /dev/null -w "%{http_code}" \
-                --max-time 3 http://localhost:18083/ \
+                --http1.0 --max-time 3 http://localhost:18083/ \
                 > "$TMPDIR/$i" 2>/dev/null || echo "000" > "$TMPDIR/$i"
             ) &
           done
