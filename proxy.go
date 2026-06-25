@@ -35,7 +35,7 @@ func handleConnection(client net.Conn, remoteAddr string, whitelist []*net.IPNet
 		return
 	}
 
-	upstream, err := net.DialTimeout("tcp", remoteAddr, dialTimeout)
+	upstream, err := dialUpstream(remoteAddr, dialTimeout)
 	if err != nil {
 		log.Printf("dial upstream %s: %v", remoteAddr, err)
 		return

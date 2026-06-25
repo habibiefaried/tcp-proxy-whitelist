@@ -24,3 +24,8 @@ func relay(a, b *net.TCPConn, idleTimeout time.Duration) {
 func tuneListener(network, address string) (net.Listener, error) {
 	return net.Listen(network, address)
 }
+
+// dialUpstream connects to the upstream server (no TFO on non-Linux).
+func dialUpstream(address string, timeout time.Duration) (net.Conn, error) {
+	return net.DialTimeout("tcp", address, timeout)
+}

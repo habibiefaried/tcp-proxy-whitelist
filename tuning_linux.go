@@ -35,10 +35,11 @@ func relay(a, b *net.TCPConn, idleTimeout time.Duration) {
 	wg.Wait()
 }
 
-// tuneListener creates a TCP listener with SO_REUSEPORT and TCP_DEFER_ACCEPT.
+// tuneListener creates a TCP listener with SO_REUSEPORT, TCP_DEFER_ACCEPT, and TCP_FASTOPEN.
 // SO_REUSEPORT lets multiple processes bind the same port for multi-core scaling.
 // TCP_DEFER_ACCEPT delays accept notification until data arrives, reducing
 // wakeups from connections that connect but never send (SYN floods, health checks).
+// TCP_FASTOPEN allows clients to send data in the SYN packet, saving one RTT.
 func tuneListener(network, address string) (net.Listener, error) {
 	lc := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
@@ -46,10 +47,27 @@ func tuneListener(network, address string) (net.Listener, error) {
 			c.Control(func(fd uintptr) {
 				unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 				unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_DEFER_ACCEPT, 1)
+				// Queue length of 256 pending TFO connections.
+				unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_FASTOPEN, 256)
 				opErr = nil
 			})
 			return opErr
 		},
 	}
 	return lc.Listen(context.Background(), network, address)
+}
+
+// dialUpstream connects to the upstream server with TCP Fast Open when possible.
+// TFO sends data in the SYN packet, saving one RTT on the upstream connection.
+func dialUpstream(address string, timeout time.Duration) (net.Conn, error) {
+	d := net.Dialer{
+		Timeout: timeout,
+		Control: func(network, address string, c syscall.RawConn) error {
+			c.Control(func(fd uintptr) {
+				unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_FASTOPEN_CONNECT, 1)
+			})
+			return nil
+		},
+	}
+	return d.Dial("tcp", address)
 }
