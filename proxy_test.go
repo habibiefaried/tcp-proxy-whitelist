@@ -604,8 +604,8 @@ func TestProxySingleBytePayload(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestProxyIdleTimeoutFires(t *testing.T) {
-	// Use a server that holds the connection open without sending anything,
-	// so the proxy's read from upstream is what goes idle.
+	// Use a server that accepts the connection and reads the initial byte
+	// but never sends anything back — simulates idle upstream.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -618,8 +618,8 @@ func TestProxyIdleTimeoutFires(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		// Hold connection open indefinitely — simulates idle upstream.
-		time.Sleep(10 * time.Second)
+		// Drain input but never respond.
+		io.Copy(io.Discard, conn)
 	}()
 
 	cfg := proxyTestConfig(l.Addr().String(), "127.0.0.0/8")
@@ -633,8 +633,11 @@ func TestProxyIdleTimeoutFires(t *testing.T) {
 	}
 	defer conn.Close()
 
+	// Send a byte to satisfy TCP_DEFER_ACCEPT (Linux delays accept until
+	// data arrives), then go idle and wait for the proxy to tear us down.
+	conn.Write([]byte("x"))
+
 	start := time.Now()
-	// Don't send anything — let the idle timeout fire on both directions.
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, readErr := conn.Read(make([]byte, 64))
 	elapsed := time.Since(start)
@@ -642,7 +645,6 @@ func TestProxyIdleTimeoutFires(t *testing.T) {
 	if readErr == nil {
 		t.Error("expected error after idle timeout, got nil")
 	}
-	// Should fire around 200ms, give generous margin for CI.
 	if elapsed > 1*time.Second {
 		t.Errorf("idle timeout took %v, expected ~200ms", elapsed)
 	}
