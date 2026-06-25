@@ -73,7 +73,8 @@ func isWhitelisted(ip net.IP, whitelist []*net.IPNet) bool {
 }
 
 // bufferRelay performs bidirectional copy using pooled heap buffers.
-// It is used on non-Linux platforms and as a fallback when splice(2) is unavailable.
+// On Linux, io.CopyBuffer between two TCPConns triggers splice(2) automatically
+// via net.TCPConn.ReadFrom, giving zero-copy while respecting SetDeadline.
 func bufferRelay(a, b *net.TCPConn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -81,16 +82,16 @@ func bufferRelay(a, b *net.TCPConn) {
 	go func() {
 		defer wg.Done()
 		buf := bufPool.Get().([]byte)
-		defer bufPool.Put(buf)
 		io.CopyBuffer(a, b, buf)
+		bufPool.Put(buf)
 		a.CloseWrite()
 	}()
 
 	go func() {
 		defer wg.Done()
 		buf := bufPool.Get().([]byte)
-		defer bufPool.Put(buf)
 		io.CopyBuffer(b, a, buf)
+		bufPool.Put(buf)
 		b.CloseWrite()
 	}()
 
