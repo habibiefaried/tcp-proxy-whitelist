@@ -109,6 +109,72 @@ jobs:
 
           kill $PROXY_PID 2>/dev/null || true
 
+      # ── case 3: concurrent stress — fire 300 requests through one proxy ──
+      - name: Concurrent stress test (300 requests)
+        run: |
+          BIND_PORT=18083 \
+            REMOTE_ADDR_PAIR=localhost:18080 \
+            WHITELISTED_SUBNET=127.0.0.0/8,::1/128 \
+            ./wlistproxy &
+          PROXY_PID=$!
+          # Wait for proxy to be ready.
+          for i in $(seq 1 20); do
+            curl -s -o /dev/null http://localhost:18083/ && break
+            sleep 0.25
+          done
+
+          echo "firing 300 concurrent requests..."
+
+          CONCURRENT=300
+          TMPDIR=$(mktemp -d)
+          START=$(date +%s%N)
+
+          # Launch N concurrent curl processes, each writes its own result file.
+          for i in $(seq 1 $CONCURRENT); do
+            (
+              BODY=$(curl -s --max-time 5 http://localhost:18083/ 2>&1)
+              echo "$BODY" > "$TMPDIR/result-$i"
+            ) &
+          done
+
+          # Wait for all background jobs to finish.
+          wait
+
+          END=$(date +%s%N)
+          ELAPSED_MS=$(( (END - START) / 1000000 ))
+
+          # Tally results.
+          PASSED=0
+          FAILED=0
+          for i in $(seq 1 $CONCURRENT); do
+            if grep -q OK "$TMPDIR/result-$i" 2>/dev/null; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+              echo "  request $i FAILED: $(cat "$TMPDIR/result-$i" 2>/dev/null | head -1)"
+            fi
+          done
+
+          RATE=$(awk "BEGIN { printf \"%.0f\", ($PASSED * 1000) / $ELAPSED_MS }")
+
+          echo ""
+          echo "═══ Stress test results ═══"
+          echo "  total:    $CONCURRENT"
+          echo "  passed:   $PASSED"
+          echo "  failed:   $FAILED"
+          echo "  time:     ${ELAPSED_MS}ms"
+          echo "  rate:     ~${RATE} req/s"
+          echo "════════════════════════════"
+
+          rm -rf "$TMPDIR"
+          kill $PROXY_PID 2>/dev/null || true
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "FAIL: $FAILED concurrent requests did not return expected response"
+            exit 1
+          fi
+          echo "PASS: all $CONCURRENT concurrent requests succeeded"
+
   release:
     name: Release
     runs-on: ubuntu-latest
