@@ -1,19 +1,18 @@
 builds:
-  -
-    id: "wlistproxy"
+  - id: "wlistproxy"
     flags:
       - -v
+      - -trimpath
     ldflags:
-     - -s -w -extldflags '-static'
+      - -s -w
     goarch:
       - amd64
-      - 386
+      - arm64
     goos:
       - linux
     env:
       - CGO_ENABLED=0
-    skip: false
+
 archives:
-  -
-    format: binary
+  - format: binary
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
