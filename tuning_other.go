@@ -2,10 +2,7 @@
 
 package main
 
-import (
-	"context"
-	"net"
-)
+import "net"
 
 // setQuickAck is a no-op on non-Linux platforms.
 func setQuickAck(conn *net.TCPConn) {}
@@ -19,6 +16,3 @@ func relay(a, b *net.TCPConn) {
 func tuneListener(network, address string) (net.Listener, error) {
 	return net.Listen(network, address)
 }
-
-// Prevent unused import error for context (used in build-tagged files only).
-var _ = context.Background
