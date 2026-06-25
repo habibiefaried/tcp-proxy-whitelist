@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// defaultCopyBufSize is the buffer size used by io.CopyBuffer.
-// 64KB matches the Linux splice pipe default and avoids over-allocation.
+// defaultCopyBufSize is the buffer size for the relay read/write loop.
+// 64KB balances syscall reduction against per-connection memory usage.
 const defaultCopyBufSize = 64 * 1024
 
 // bufPool reuses copy buffers across connections to relieve GC pressure.

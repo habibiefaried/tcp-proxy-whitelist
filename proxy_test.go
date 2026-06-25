@@ -1,7 +1,7 @@
 package main
 
 import (
-	"context"
+	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -156,7 +156,6 @@ func startProxy(tb testing.TB, cfg *config) (addr string, stop func()) {
 	}
 	addr = l.Addr().String()
 
-	_, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
 
@@ -176,7 +175,6 @@ func startProxy(tb testing.TB, cfg *config) (addr string, stop func()) {
 	}()
 
 	return addr, func() {
-		cancel()
 		l.Close()
 		wg.Wait()
 	}
@@ -276,8 +274,8 @@ func TestProxyLargePayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if len(reply) != len(payload) {
-		t.Errorf("reply length = %d, want %d", len(reply), len(payload))
+	if !bytes.Equal(reply, payload) {
+		t.Errorf("reply mismatch: len=%d, want len=%d", len(reply), len(payload))
 	}
 }
 
@@ -599,6 +597,175 @@ func TestProxySingleBytePayload(t *testing.T) {
 	if reply != "X" {
 		t.Errorf("single byte: got %q, want %q", reply, "X")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: idle timeout fires on inactive connection
+// ---------------------------------------------------------------------------
+
+func TestProxyIdleTimeoutFires(t *testing.T) {
+	// Use a server that holds the connection open without sending anything,
+	// so the proxy's read from upstream is what goes idle.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Hold connection open indefinitely — simulates idle upstream.
+		time.Sleep(10 * time.Second)
+	}()
+
+	cfg := proxyTestConfig(l.Addr().String(), "127.0.0.0/8")
+	cfg.idleTimeout = 200 * time.Millisecond
+	proxyAddr, proxyStop := startProxy(t, cfg)
+	defer proxyStop()
+
+	conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	start := time.Now()
+	// Don't send anything — let the idle timeout fire on both directions.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, readErr := conn.Read(make([]byte, 64))
+	elapsed := time.Since(start)
+
+	if readErr == nil {
+		t.Error("expected error after idle timeout, got nil")
+	}
+	// Should fire around 200ms, give generous margin for CI.
+	if elapsed > 1*time.Second {
+		t.Errorf("idle timeout took %v, expected ~200ms", elapsed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: active connection survives past idle timeout duration
+// ---------------------------------------------------------------------------
+
+func TestProxyActiveConnectionSurvives(t *testing.T) {
+	upstreamAddr, upstreamStop := echoServer(t)
+	defer upstreamStop()
+
+	cfg := proxyTestConfig(upstreamAddr, "127.0.0.0/8")
+	cfg.idleTimeout = 300 * time.Millisecond
+	proxyAddr, proxyStop := startProxy(t, cfg)
+	defer proxyStop()
+
+	conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Keep sending data — total time exceeds idleTimeout but connection
+	// should stay alive because we're never idle.
+	for i := 0; i < 5; i++ {
+		_, err := conn.Write([]byte("ping"))
+		if err != nil {
+			t.Fatalf("write at iteration %d: %v", i, err)
+		}
+		// Read echoed data to drain
+		buf := make([]byte, 4)
+		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		_, err = io.ReadFull(conn, buf)
+		if err != nil {
+			t.Fatalf("read at iteration %d: %v", i, err)
+		}
+		time.Sleep(150 * time.Millisecond) // less than 300ms idle timeout
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: half-close propagation (client closes write, upstream still sends)
+// ---------------------------------------------------------------------------
+
+func TestProxyHalfClose(t *testing.T) {
+	// Custom server: reads everything, then sends a response after client closes write.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Read all from client
+		io.ReadAll(conn)
+		// Then send response (client write is closed but read is still open)
+		conn.Write([]byte("response-after-half-close"))
+		conn.(*net.TCPConn).CloseWrite()
+	}()
+
+	cfg := proxyTestConfig(l.Addr().String(), "127.0.0.0/8")
+	proxyAddr, proxyStop := startProxy(t, cfg)
+	defer proxyStop()
+
+	conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Send data then half-close
+	conn.Write([]byte("request"))
+	conn.(*net.TCPConn).CloseWrite()
+
+	// Should still receive the response
+	reply, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(reply) != "response-after-half-close" {
+		t.Errorf("got %q, want %q", string(reply), "response-after-half-close")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: IDLE_TIMEOUT env var parsing
+// ---------------------------------------------------------------------------
+
+func TestParseConfigIdleTimeout(t *testing.T) {
+	t.Setenv("BIND_PORT", "9090")
+	t.Setenv("REMOTE_ADDR_PAIR", "10.0.0.1:8080")
+	t.Setenv("WHITELISTED_SUBNET", "10.0.0.0/8")
+
+	t.Run("valid duration", func(t *testing.T) {
+		t.Setenv("IDLE_TIMEOUT", "5m")
+		cfg := parseConfig()
+		if cfg.idleTimeout != 5*time.Minute {
+			t.Errorf("got %v, want 5m", cfg.idleTimeout)
+		}
+	})
+
+	t.Run("invalid falls back to default", func(t *testing.T) {
+		t.Setenv("IDLE_TIMEOUT", "not-a-duration")
+		cfg := parseConfig()
+		if cfg.idleTimeout != 30*time.Second {
+			t.Errorf("got %v, want 30s default", cfg.idleTimeout)
+		}
+	})
+
+	t.Run("unset uses default", func(t *testing.T) {
+		t.Setenv("IDLE_TIMEOUT", "")
+		cfg := parseConfig()
+		if cfg.idleTimeout != 30*time.Second {
+			t.Errorf("got %v, want 30s default", cfg.idleTimeout)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

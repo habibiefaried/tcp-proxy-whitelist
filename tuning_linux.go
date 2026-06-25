@@ -25,8 +25,6 @@ func setQuickAck(conn *net.TCPConn) {
 }
 
 // relay performs bidirectional copy with idle timeout.
-// On Linux, Go's runtime uses splice(2) internally for net.TCPConn I/O
-// when possible, giving zero-copy while respecting deadlines.
 func relay(a, b *net.TCPConn, idleTimeout time.Duration) {
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -43,15 +41,12 @@ func relay(a, b *net.TCPConn, idleTimeout time.Duration) {
 func tuneListener(network, address string) (net.Listener, error) {
 	lc := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
-			var opErr error
 			c.Control(func(fd uintptr) {
 				unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 				unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_DEFER_ACCEPT, 1)
-				// Queue length of 256 pending TFO connections.
 				unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_FASTOPEN, 256)
-				opErr = nil
 			})
-			return opErr
+			return nil
 		},
 	}
 	return lc.Listen(context.Background(), network, address)
