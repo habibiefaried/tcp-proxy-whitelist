@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"net"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -53,22 +54,26 @@ func spliceRelay(client, upstream *net.TCPConn) error {
 		unix.Close(p2[0]); unix.Close(p2[1])
 	}()
 
-	done := make(chan struct{}, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
 
 	// client → upstream (pipe p1)
 	go func() {
+		defer wg.Done()
 		spliceDirection(upstream, client, p1[1], p1[0])
-		done <- struct{}{}
+		upstream.CloseWrite()
 	}()
 
 	// upstream → client (pipe p2)
 	go func() {
+		defer wg.Done()
 		spliceDirection(client, upstream, p2[1], p2[0])
-		done <- struct{}{}
+		client.CloseWrite()
 	}()
 
-	// Wait for one direction to finish (peer closed), then tear down both.
-	<-done
+	// Wait for both directions to finish (peer closes → CloseWrite signals
+	// the other direction → splice returns on error → goroutine exits).
+	wg.Wait()
 	return nil
 }
 

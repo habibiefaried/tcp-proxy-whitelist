@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -365,10 +366,32 @@ func TestProxyConcurrentConnections(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			msg := "ping-" + string(rune('A'+id%26))
-			reply := sendRecv(t, proxyAddr, msg)
-			if reply != msg {
-				errCh <- &net.OpError{}
+			msg := fmt.Sprintf("ping-%d", id)
+
+			conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+			if err != nil {
+				errCh <- fmt.Errorf("goroutine %d dial: %w", id, err)
+				return
+			}
+			defer conn.Close()
+
+			if _, err := io.WriteString(conn, msg); err != nil {
+				errCh <- fmt.Errorf("goroutine %d write: %w", id, err)
+				return
+			}
+
+			// Close write side so the echo server knows we're done.
+			if tcp, ok := conn.(*net.TCPConn); ok {
+				tcp.CloseWrite()
+			}
+
+			reply, err := io.ReadAll(conn)
+			if err != nil {
+				errCh <- fmt.Errorf("goroutine %d read: %w", id, err)
+				return
+			}
+			if string(reply) != msg {
+				errCh <- fmt.Errorf("goroutine %d: echo = %q, want %q", id, string(reply), msg)
 			}
 		}(i)
 	}
