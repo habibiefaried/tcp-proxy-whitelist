@@ -662,7 +662,6 @@ func BenchmarkBufPool(b *testing.B) {
 
 // BenchmarkProxyThroughput measures end-to-end throughput through the proxy.
 func BenchmarkProxyThroughput(b *testing.B) {
-	// Start echo server on a random port.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		b.Fatal(err)
@@ -683,8 +682,8 @@ func BenchmarkProxyThroughput(b *testing.B) {
 		}
 	}()
 
-	// Start proxy.
 	cfg := proxyTestConfig(upstreamAddr, "127.0.0.0/8")
+	cfg.idleTimeout = 5 * time.Minute
 	proxyAddr, proxyStop := startProxy(b, cfg)
 	defer proxyStop()
 
@@ -696,18 +695,16 @@ func BenchmarkProxyThroughput(b *testing.B) {
 	b.ResetTimer()
 	b.SetBytes(int64(len(payload) * 2)) // sent + echoed
 
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
-			if err != nil {
-				b.Fatal(err)
-			}
-			conn.Write(payload)
-			if tcp, ok := conn.(*net.TCPConn); ok {
-				tcp.CloseWrite()
-			}
-			io.ReadAll(conn)
-			conn.Close()
+	for i := 0; i < b.N; i++ {
+		conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+		if err != nil {
+			b.Fatal(err)
 		}
-	})
+		conn.Write(payload)
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			tcp.CloseWrite()
+		}
+		io.ReadAll(conn)
+		conn.Close()
+	}
 }

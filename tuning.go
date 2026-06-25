@@ -5,16 +5,16 @@ import (
 	"time"
 )
 
-// tuneConn applies TCP options to reduce latency and improve throughput.
-//   - TCP_NODELAY disables Nagle's algorithm (eliminates 200ms coalescing delay).
-//   - SO_KEEPALIVE detects silently-dead connections.
-//   - Enlarged read/write buffers reduce userspace/kernel context switches.
+// tuneConn applies TCP socket options to reduce latency.
+//   - TCP_NODELAY disables Nagle's algorithm.
+//   - SO_KEEPALIVE detects silently-dead peers.
+//   - TCP_QUICKACK (Linux) eliminates delayed-ACK latency.
+//
+// Socket buffer sizes are left at kernel defaults — Linux auto-tunes
+// them based on available memory and connection RTT.
 func tuneConn(conn *net.TCPConn) {
 	conn.SetNoDelay(true)
 	conn.SetKeepAlive(true)
 	conn.SetKeepAlivePeriod(30 * time.Second)
-	conn.SetReadBuffer(256 * 1024)
-	conn.SetWriteBuffer(256 * 1024)
-
-	setQuickAck(conn) // platform-specific (Linux TCP_QUICKACK)
+	setQuickAck(conn)
 }

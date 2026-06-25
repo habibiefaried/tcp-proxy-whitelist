@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"log"
 	"net"
 	"sync"
@@ -9,8 +8,8 @@ import (
 )
 
 // defaultCopyBufSize is the buffer size used by io.CopyBuffer.
-// 256KB reduces read/write syscalls by 8x compared to the default 32KB.
-const defaultCopyBufSize = 256 * 1024
+// 64KB matches the Linux splice pipe default and avoids over-allocation.
+const defaultCopyBufSize = 64 * 1024
 
 // bufPool reuses copy buffers across connections to relieve GC pressure.
 var bufPool = sync.Pool{
@@ -49,16 +48,8 @@ func handleConnection(client net.Conn, remoteAddr string, whitelist []*net.IPNet
 	tuneConn(upstreamTCP)
 	tuneConn(clientTCP)
 
-	// Set a hard deadline on the connection lifetime. If the relay takes
-	// longer than idleTimeout, both connections are torn down. This prevents
-	// goroutine leaks from protocols that use indefinite keep-alive
-	// (e.g. HTTP/1.1, Redis idle, database connection pools).
-	deadline := time.Now().Add(idleTimeout)
-	clientTCP.SetDeadline(deadline)
-	upstreamTCP.SetDeadline(deadline)
-
-	log.Printf("proxying %s <-> %s (timeout %v)", remoteIP, remoteAddr, idleTimeout)
-	relay(clientTCP, upstreamTCP)
+	log.Printf("proxying %s <-> %s (idle timeout %v)", remoteIP, remoteAddr, idleTimeout)
+	relay(clientTCP, upstreamTCP, idleTimeout)
 }
 
 // isWhitelisted reports whether ip is contained by any CIDR in the whitelist.
@@ -72,28 +63,26 @@ func isWhitelisted(ip net.IP, whitelist []*net.IPNet) bool {
 	return false
 }
 
-// bufferRelay performs bidirectional copy using pooled heap buffers.
-// On Linux, io.CopyBuffer between two TCPConns triggers splice(2) automatically
-// via net.TCPConn.ReadFrom, giving zero-copy while respecting SetDeadline.
-func bufferRelay(a, b *net.TCPConn) {
-	var wg sync.WaitGroup
-	wg.Add(2)
+// copyWithIdleTimeout copies src to dst, resetting the idle deadline after
+// each successful read. This mirrors HAProxy's timeout client/server behavior:
+// the timer only fires when the connection is truly idle.
+func copyWithIdleTimeout(dst, src *net.TCPConn, idleTimeout time.Duration) {
+	buf := bufPool.Get().([]byte)
+	defer bufPool.Put(buf)
 
-	go func() {
-		defer wg.Done()
-		buf := bufPool.Get().([]byte)
-		io.CopyBuffer(a, b, buf)
-		bufPool.Put(buf)
-		a.CloseWrite()
-	}()
-
-	go func() {
-		defer wg.Done()
-		buf := bufPool.Get().([]byte)
-		io.CopyBuffer(b, a, buf)
-		bufPool.Put(buf)
-		b.CloseWrite()
-	}()
-
-	wg.Wait()
+	for {
+		src.SetReadDeadline(time.Now().Add(idleTimeout))
+		nr, readErr := src.Read(buf)
+		if nr > 0 {
+			dst.SetWriteDeadline(time.Now().Add(idleTimeout))
+			_, writeErr := dst.Write(buf[:nr])
+			if writeErr != nil {
+				break
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	dst.CloseWrite()
 }

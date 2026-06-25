@@ -131,11 +131,9 @@ type config struct {
 	// dialTimeout caps how long we wait for the upstream TCP handshake.
 	dialTimeout time.Duration
 
-	// idleTimeout is the maximum lifetime of a proxied connection.
-	// When the deadline is reached the relay is torn down, preventing
-	// goroutine leaks from protocols that use indefinite keep-alive
-	// (e.g. HTTP/1.1 without Connection: close).
-	// Default: 30s. Set via IDLE_TIMEOUT (e.g. "60s", "5m").
+	// idleTimeout tears down a relay when no data flows in either direction
+	// for this duration (resets on every successful read, like HAProxy's
+	// timeout client/server). Default: 30s. Set via IDLE_TIMEOUT.
 	idleTimeout time.Duration
 }
 
@@ -160,8 +158,7 @@ func parseConfig() *config {
 		idleTimeout: 30 * time.Second,
 	}
 
-	// Optional: IDLE_TIMEOUT caps the lifetime of each proxied connection
-	// to prevent goroutine leaks from keep-alive protocols.
+	// Optional: IDLE_TIMEOUT tears down idle connections (resets on activity).
 	if s := os.Getenv("IDLE_TIMEOUT"); s != "" {
 		d, err := time.ParseDuration(s)
 		if err != nil {

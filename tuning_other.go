@@ -2,14 +2,22 @@
 
 package main
 
-import "net"
+import (
+	"net"
+	"sync"
+	"time"
+)
 
 // setQuickAck is a no-op on non-Linux platforms.
 func setQuickAck(conn *net.TCPConn) {}
 
-// relay delegates to the buffer-pool-based copier on non-Linux platforms.
-func relay(a, b *net.TCPConn) {
-	bufferRelay(a, b)
+// relay performs bidirectional copy with idle timeout.
+func relay(a, b *net.TCPConn, idleTimeout time.Duration) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); copyWithIdleTimeout(a, b, idleTimeout) }()
+	go func() { defer wg.Done(); copyWithIdleTimeout(b, a, idleTimeout) }()
+	wg.Wait()
 }
 
 // tuneListener returns a listener without SO_REUSEPORT (not portable).
