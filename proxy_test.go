@@ -431,6 +431,204 @@ func TestGracefulShutdown(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Edge case: isWhitelisted
+// ---------------------------------------------------------------------------
+
+func TestIsWhitelistedEdgeCases(t *testing.T) {
+	parse := func(s string) *net.IPNet {
+		_, cidr, err := net.ParseCIDR(s)
+		if err != nil {
+			t.Fatalf("bad test CIDR %q: %v", s, err)
+		}
+		return cidr
+	}
+
+	// IPv4-mapped IPv6 addresses should match IPv4 CIDRs.
+	t.Run("ipv4 mapped ipv6 matches v4 cidr", func(t *testing.T) {
+		ip := net.ParseIP("::ffff:10.0.0.5") // IPv4-mapped IPv6
+		whitelist := []*net.IPNet{parse("10.0.0.0/8")}
+		if !isWhitelisted(ip, whitelist) {
+			t.Error("IPv4-mapped IPv6 should match IPv4 CIDR")
+		}
+	})
+
+	// CIDR with host bits set (e.g. 10.0.0.5/8) — net.ParseCIDR normalizes
+	// this to 10.0.0.0/8 internally, so the match still works.
+	t.Run("cidr with host bits set normalizes", func(t *testing.T) {
+		ip := net.ParseIP("10.255.255.255")
+		whitelist := []*net.IPNet{parse("10.0.0.5/8")}
+		if !isWhitelisted(ip, whitelist) {
+			t.Error("10.0.0.5/8 should normalize to 10.0.0.0/8")
+		}
+	})
+
+	// Nil IP should not panic.
+	t.Run("nil ip", func(t *testing.T) {
+		whitelist := []*net.IPNet{parse("10.0.0.0/8")}
+		if isWhitelisted(nil, whitelist) {
+			t.Error("nil IP should not match anything")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: CIDR whitelist parsing (parseConfig via env vars)
+// ---------------------------------------------------------------------------
+
+func TestParseConfigWhitelistEdgeCases(t *testing.T) {
+	// Set valid BIND_PORT and REMOTE_ADDR_PAIR so parseConfig doesn't Fatal.
+	// t.Setenv scopes the change to this test and restores on cleanup.
+	t.Setenv("BIND_PORT", "9090")
+	t.Setenv("REMOTE_ADDR_PAIR", "10.0.0.1:8080")
+
+	t.Run("trailing comma", func(t *testing.T) {
+		t.Setenv("WHITELISTED_SUBNET", "10.0.0.0/8,")
+		cfg := parseConfig()
+		if len(cfg.whitelist) != 1 {
+			t.Errorf("trailing comma: got %d CIDRs, want 1", len(cfg.whitelist))
+		}
+	})
+
+	t.Run("leading comma", func(t *testing.T) {
+		t.Setenv("WHITELISTED_SUBNET", ",10.0.0.0/8")
+		cfg := parseConfig()
+		if len(cfg.whitelist) != 1 {
+			t.Errorf("leading comma: got %d CIDRs, want 1", len(cfg.whitelist))
+		}
+	})
+
+	t.Run("only commas and whitespace", func(t *testing.T) {
+		t.Setenv("WHITELISTED_SUBNET", "  ,  ,  ")
+		cfg := parseConfig()
+		if len(cfg.whitelist) != 0 {
+			t.Errorf("only commas: got %d CIDRs, want 0 (block all)", len(cfg.whitelist))
+		}
+	})
+
+	t.Run("mixed valid and invalid", func(t *testing.T) {
+		t.Setenv("WHITELISTED_SUBNET", "10.0.0.0/8,not-a-cidr,172.16.0.0/12")
+		cfg := parseConfig()
+		if len(cfg.whitelist) != 2 {
+			t.Errorf("mixed: got %d CIDRs, want 2 (invalid skipped)", len(cfg.whitelist))
+		}
+	})
+
+	t.Run("whitespace around entries", func(t *testing.T) {
+		t.Setenv("WHITELISTED_SUBNET", "  10.0.0.0/8  ,  172.16.0.0/12  ")
+		cfg := parseConfig()
+		if len(cfg.whitelist) != 2 {
+			t.Errorf("whitespace: got %d CIDRs, want 2", len(cfg.whitelist))
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: upstream unreachable
+// ---------------------------------------------------------------------------
+
+func TestProxyUpstreamUnreachable(t *testing.T) {
+	// Point at a port nothing is listening on.
+	cfg := proxyTestConfig("127.0.0.1:19999", "127.0.0.0/8")
+	cfg.dialTimeout = 100 * time.Millisecond
+
+	proxyAddr, proxyStop := startProxy(t, cfg)
+	defer proxyStop()
+
+	// Connection should be accepted by the proxy, but the upstream dial
+	// will fail. The proxy should close the client connection cleanly.
+	conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	n, _ := conn.Read(make([]byte, 64))
+	conn.Close()
+
+	if n != 0 {
+		t.Errorf("read %d bytes from failed-upstream connection, want 0", n)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: zero-length payload
+// ---------------------------------------------------------------------------
+
+func TestProxyZeroLengthPayload(t *testing.T) {
+	upstreamAddr, upstreamStop := echoServer(t)
+	defer upstreamStop()
+
+	cfg := proxyTestConfig(upstreamAddr, "127.0.0.0/8")
+	proxyAddr, proxyStop := startProxy(t, cfg)
+	defer proxyStop()
+
+	conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Close immediately without sending anything.
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		tcp.CloseWrite()
+	}
+
+	reply, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(reply) != 0 {
+		t.Errorf("expected empty reply, got %d bytes", len(reply))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: single-byte payload
+// ---------------------------------------------------------------------------
+
+func TestProxySingleBytePayload(t *testing.T) {
+	upstreamAddr, upstreamStop := echoServer(t)
+	defer upstreamStop()
+
+	cfg := proxyTestConfig(upstreamAddr, "127.0.0.0/8")
+	proxyAddr, proxyStop := startProxy(t, cfg)
+	defer proxyStop()
+
+	reply := sendRecv(t, proxyAddr, "X")
+	if reply != "X" {
+		t.Errorf("single byte: got %q, want %q", reply, "X")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: concurrent buffer pool access
+// ---------------------------------------------------------------------------
+
+func TestBufPoolConcurrent(t *testing.T) {
+	const goroutines = 100
+	const iterations = 1000
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for g := 0; g < goroutines; g++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				buf := bufPool.Get().([]byte)
+				if len(buf) != defaultCopyBufSize {
+					t.Errorf("buffer size %d != %d", len(buf), defaultCopyBufSize)
+				}
+				// Write something to simulate real use.
+				buf[0] = byte(i)
+				bufPool.Put(buf)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// ---------------------------------------------------------------------------
 // Benchmarks
 // ---------------------------------------------------------------------------
 

@@ -9,7 +9,7 @@ on:
 
 jobs:
   test:
-    name: Test
+    name: Unit Tests
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -26,11 +26,94 @@ jobs:
       - name: Test
         run: go test -race -v -timeout 120s ./...
 
+  integration:
+    name: Integration (HTTP smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build proxy
+        run: CGO_ENABLED=0 go build -ldflags="-s -w" -o wlistproxy .
+
+      # ── upstream: Python HTTP server on port 18080 ──────────────────
+      - name: Start upstream HTTP server
+        run: |
+          mkdir -p /tmp/upstream
+          echo "<html><body>OK</body></html>" > /tmp/upstream/index.html
+          python3 -m http.server 18080 --directory /tmp/upstream &
+          # Wait for it to be ready.
+          for i in $(seq 1 20); do
+            curl -s -o /dev/null http://localhost:18080/ && break
+            sleep 0.25
+          done
+          echo "upstream ready"
+
+      # ── case 1: whitelisted (127.0.0.0/8 includes localhost) ──────
+      - name: Test whitelisted request passes through
+        run: |
+          BIND_PORT=18081 \
+            REMOTE_ADDR_PAIR=localhost:18080 \
+            WHITELISTED_SUBNET=127.0.0.0/8 \
+            ./wlistproxy &
+          PROXY_PID=$!
+          # Wait for proxy to be ready.
+          for i in $(seq 1 20); do
+            curl -s -o /dev/null http://localhost:18081/ && break
+            sleep 0.25
+          done
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:18081/)
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAIL: expected 200, got $HTTP_CODE"
+            kill $PROXY_PID 2>/dev/null
+            exit 1
+          fi
+          echo "PASS: whitelisted request returned HTTP $HTTP_CODE"
+
+          BODY=$(curl -s http://localhost:18081/)
+          if echo "$BODY" | grep -q OK; then
+            echo "PASS: response body contains expected content"
+          else
+            echo "FAIL: unexpected response body: $BODY"
+            kill $PROXY_PID 2>/dev/null
+            exit 1
+          fi
+
+          kill $PROXY_PID 2>/dev/null || true
+
+      # ── case 2: non-whitelisted (10.0.0.0/8 excludes localhost) ──
+      - name: Test non-whitelisted request is blocked
+        run: |
+          BIND_PORT=18082 \
+            REMOTE_ADDR_PAIR=localhost:18080 \
+            WHITELISTED_SUBNET=10.0.0.0/8 \
+            ./wlistproxy &
+          PROXY_PID=$!
+          # Wait for proxy to be ready (accepts the connection, just closes it).
+          sleep 1
+
+          # curl should fail — proxy accepts then immediately closes.
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://localhost:18082/ 2>&1 || echo "000")
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "FAIL: non-whitelisted IP should not get HTTP 200"
+            kill $PROXY_PID 2>/dev/null
+            exit 1
+          fi
+          echo "PASS: non-whitelisted request was blocked (HTTP $HTTP_CODE)"
+
+          kill $PROXY_PID 2>/dev/null || true
+
   release:
     name: Release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    needs: [test, integration]
     steps:
       - name: Check out code
         uses: actions/checkout@v4
