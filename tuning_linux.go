@@ -33,17 +33,14 @@ func relay(a, b *net.TCPConn, idleTimeout time.Duration) {
 	wg.Wait()
 }
 
-// tuneListener creates a TCP listener with SO_REUSEPORT, TCP_DEFER_ACCEPT, and TCP_FASTOPEN.
+// tuneListener creates a TCP listener with SO_REUSEPORT and TCP_FASTOPEN.
 // SO_REUSEPORT lets multiple processes bind the same port for multi-core scaling.
-// TCP_DEFER_ACCEPT delays accept notification until data arrives, reducing
-// wakeups from connections that connect but never send (SYN floods, health checks).
 // TCP_FASTOPEN allows clients to send data in the SYN packet, saving one RTT.
 func tuneListener(network, address string) (net.Listener, error) {
 	lc := net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
 			c.Control(func(fd uintptr) {
 				unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-				unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_DEFER_ACCEPT, 1)
 				unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_FASTOPEN, 256)
 			})
 			return nil

@@ -633,8 +633,8 @@ func TestProxyIdleTimeoutFires(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Send a byte to satisfy TCP_DEFER_ACCEPT (Linux delays accept until
-	// data arrives), then go idle and wait for the proxy to tear us down.
+	// Send a byte to trigger accept, then go idle and wait for the proxy
+	// to tear us down when idle timeout fires.
 	conn.Write([]byte("x"))
 
 	start := time.Now()
